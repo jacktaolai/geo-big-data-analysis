@@ -426,175 +426,146 @@ def cluster_hourly_complaint_distributions(gdf:gpd.GeoDataFrame, eps:float=0.8, 
 
 
 import geopandas as gpd
-from folium import Map, CircleMarker, FeatureGroup, LayerControl, Tooltip
-from folium.plugins import HeatMap, MarkerCluster, FloatImage
-import branca.colormap as cm
-import numpy as np
-import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
-import folium
-from branca.element import Template, MacroElement
-
-import geopandas as gpd
-from folium import Map, CircleMarker, FeatureGroup, LayerControl, Tooltip
+import pandas as pd
+from folium import Map, CircleMarker, FeatureGroup, LayerControl, Tooltip, TileLayer
 from folium.plugins import HeatMap, MarkerCluster
 import branca.colormap as cm
-import numpy as np
 import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
 
-def create_folium_map(gdf: gpd.GeoDataFrame) -> None:
-    """
-    创建美观的噪声聚类 folium 地图，增强交互与视觉效果
-    """
-    # 1. 初始化地图
+
+def create_folium_map(
+    gdf: gpd.GeoDataFrame,
+    map_style: str = "light"
+) -> None:
+    """创建优化后的噪声聚类地图"""
+    # 底图模式选择
+    tile_options = {
+        "light": "CartoDB positron",
+        "dark": "CartoDB dark_matter"
+    }
+    if map_style not in tile_options:
+        raise ValueError("map_style仅支持'light'或'dark'")
+
+    # 初始化地图
     center_lat = gdf.geometry.y.mean()
     center_lon = gdf.geometry.x.mean()
     m = Map(
         location=[center_lat, center_lon],
         zoom_start=12,
-        tiles='CartoDB dark_matter',  # 深色底图
+        tiles=None
     )
 
-    # 2. 热图图层（独立图层）
-    heat_layer = FeatureGroup(name='投诉密度热图', show=True)
+    # 添加可切换底图
+    TileLayer(
+        tiles=tile_options["light"],
+        name="白色底图",
+        control=True
+    ).add_to(m)
+    TileLayer(
+        tiles=tile_options["dark"],
+        name="黑色底图",
+        control=True
+    ).add_to(m)
+
+    # 热图图层
     heat_data = [[point.y, point.x] for point in gdf.geometry]
+    heat_layer = FeatureGroup(name='投诉密度热图', show=True)
     HeatMap(
         heat_data,
         name='投诉密度',
         radius=15,
         blur=10,
         min_opacity=0.3,
-        gradient={
-            0.0: 'blue',
-            0.2: 'cyan',
-            0.4: 'yellow',
-            0.6: 'orange',
-            1.0: 'red'
-        }
+        gradient={0.0: 'blue', 0.2: 'cyan', 0.4: 'yellow', 0.6: 'orange', 1.0: 'red'}
     ).add_to(heat_layer)
     heat_layer.add_to(m)
 
-    # 3. 聚类配色方案
+    # 聚类配色
     valid_clusters = gdf[gdf['cluster'] != -1]['cluster'].unique()
-    
-    # 使用tab20色板（20种高对比度颜色）
-    tab20_colors = plt.cm.tab20(np.linspace(0, 1, 20))
-    tab20_hex = [mcolors.rgb2hex(color) for color in tab20_colors]
-    
+    valid_clusters = sorted(valid_clusters)
+
+    # 高区分度颜色库
+    base_colors = list(mcolors.TABLEAU_COLORS.values())
+    extra_colors = [c for c in mcolors.CSS4_COLORS.values() if c not in base_colors][:10]
+    color_palette = base_colors + extra_colors
+    if len(valid_clusters) > len(color_palette):
+        color_palette = color_palette * (len(valid_clusters) // len(color_palette) + 1)
+
     # 创建颜色映射字典
-    color_map = {}
+    cluster_color_map = {}
     for i, cluster_id in enumerate(valid_clusters):
-        # 跳过黄色系（索引8-11）
-        idx = i * 3 % 20
-        if 8 <= idx <= 11:
-            idx = (idx + 4) % 20
-        color_map[cluster_id] = tab20_hex[idx]
-    
-    # 4. 所有点图层（按类别着色）
-    all_points_layer = FeatureGroup(name='所有点（按类别着色）', show=True)
-    
-    # 为每个点创建标记（按聚类类别着色）
-    for _, row in gdf.iterrows():
-        if row['cluster'] == -1:
-            # 噪声点使用灰色
-            color = 'gray'
-            fill_color = 'gray'
-            opacity = 0.5
-        else:
-            # 聚类点使用对应颜色
-            color = color_map.get(row['cluster'], 'blue')
-            fill_color = color
-            opacity = 0.8
-        
-        CircleMarker(
-            location=[row.geometry.y, row.geometry.x],
-            radius=3,
-            color=color,
-            fill=True,
-            fill_color=fill_color,
-            fill_opacity=opacity,
-            tooltip=Tooltip(f"聚类ID: {row['cluster']}"),
-            popup=f"聚类ID: {row['cluster']}"
-        ).add_to(all_points_layer)
-    
-    all_points_layer.add_to(m)
+        cluster_color_map[cluster_id] = color_palette[i]
 
-    # 5. 聚类点聚合图层（MarkerCluster）
-    cluster_layer = FeatureGroup(name='聚类点聚合', show=True)
-    marker_cluster = MarkerCluster().add_to(cluster_layer)
-    
-    # 只添加聚类点（不包括噪声点）
-    for _, row in gdf[gdf['cluster'] != -1].iterrows():
-        color = color_map.get(row['cluster'], 'blue')
-        CircleMarker(
-            location=[row.geometry.y, row.geometry.x],
-            radius=4,
-            color=color,
-            fill=True,
-            fill_color=color,
-            fill_opacity=0.8,
-            tooltip=Tooltip(f"聚类ID: {row['cluster']}"),
-            popup=f"聚类ID: {row['cluster']}"
-        ).add_to(marker_cluster)
-    
-    cluster_layer.add_to(m)
-
-    # 6. 噪声点图层（独立图层）
+    # 噪声点图层 - 降低显眼度改进
     noise_points = gdf[gdf['cluster'] == -1]
     if not noise_points.empty:
-        noise_layer = FeatureGroup(name='噪声点（未聚类）', show=True)
+        noise_layer = FeatureGroup(name='噪声点 (未聚类)', show=True)
         for _, row in noise_points.iterrows():
             CircleMarker(
                 location=[row.geometry.y, row.geometry.x],
-                radius=3,
-                color='gray',
+                radius=2,  # 减小半径
+                color='#888888',  # 使用更中性的灰色
                 fill=True,
-                fill_color='gray',
-                fill_opacity=0.5,
-                tooltip=Tooltip(f"噪声点（未聚类）"),
-                popup=f"噪声点（未聚类）"
+                fill_color='#888888',
+                fill_opacity=0.4,  # 降低填充透明度
+                weight=1,  # 减小边框粗细
+                tooltip=Tooltip("噪声点 (未聚类)")
             ).add_to(noise_layer)
         noise_layer.add_to(m)
 
-    # 7. 专业图例（离散色标）
-    if len(valid_clusters) > 0:
-        # 创建离散色标
-        colormap = cm.StepColormap(
-            colors=[color_map[cid] for cid in valid_clusters],
-            vmin=min(valid_clusters),
-            vmax=max(valid_clusters),
-            caption='聚类类别',
-            index=[min(valid_clusters)] + list(valid_clusters) + [max(valid_clusters)],
-            tick_labels=[str(cid) for cid in valid_clusters]
-        )
+    # 所有聚类点归为一个图层 - 新增功能
+    all_clusters_layer = FeatureGroup(name='所有聚类点', show=True)
+    marker_cluster = MarkerCluster().add_to(all_clusters_layer)
+    
+    for cluster_id in valid_clusters:
+        cluster_points = gdf[gdf['cluster'] == cluster_id]
+        cluster_color = cluster_color_map[cluster_id]
         
-        # 添加色标到地图
-        colormap.add_to(m)
+        for _, row in cluster_points.iterrows():
+            CircleMarker(
+                location=[row.geometry.y, row.geometry.x],
+                radius=4,
+                color=cluster_color,
+                fill=True,
+                fill_color=cluster_color,
+                fill_opacity=0.8,
+                tooltip=Tooltip(f"聚类ID: {cluster_id}")
+            ).add_to(marker_cluster)
+    
+    all_clusters_layer.add_to(m)
+
+    # 所有点综合显示图层（按类别着色） - 新增功能
+    all_points_layer = FeatureGroup(name='所有点（按类别着色）', show=False)
+    
+    for _, row in gdf.iterrows():
+        if row['cluster'] == -1:
+            # 噪声点使用更中性的灰色
+            color = '#888888'
+            fill_opacity = 0.4
+            radius = 2
+        else:
+            color = cluster_color_map[row['cluster']]
+            fill_opacity = 0.8
+            radius = 4
         
-        # 添加噪声点图例
-        noise_colormap = cm.StepColormap(
-            colors=['gray'],
-            vmin=-1,
-            vmax=-1,
-            caption='噪声点',
-            index=[-1],
-            tick_labels=['噪声点']
-        )
-        noise_colormap.add_to(m)
+        CircleMarker(
+            location=[row.geometry.y, row.geometry.x],
+            radius=radius,
+            color=color,
+            fill=True,
+            fill_color=color,
+            fill_opacity=fill_opacity,
+            tooltip=Tooltip(f"聚类ID: {row['cluster']}")
+        ).add_to(all_points_layer)
+    
+    all_points_layer.add_to(m)
+    # 图层控制器
+    LayerControl(position='topright', collapsed=False).add_to(m)
 
-    # 8. 图层控制
-    LayerControl(
-        position='topright',
-        collapsed=False,
-        autoZIndex=True
-    ).add_to(m)
-
-    # 9. 保存与预览
-    map_filename = 'noise_complaints_clusters.html'
+    # 保存地图
+    map_filename = f'noise_clusters_{map_style}.html'
     m.save(map_filename)
     print(f"地图已保存为: {map_filename}")
-    # m.show_in_browser()  # 若需自动打开浏览器，取消注释
 
 if __name__=="__main__":
     # 提取前1000条数据
