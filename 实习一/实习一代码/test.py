@@ -627,6 +627,118 @@ def create_folium_map(
     m.save(map_filename)
     print(f"地图已保存为: {map_filename}")
 
+def find_high_density_periods(gdf):
+    """
+    识别高密度投诉的时间段并打印结果
+    
+    参数:
+    gdf: GeoDataFrame, 包含投诉数据
+    """
+    # 确保时间列是datetime类型
+    if not pd.api.types.is_datetime64_any_dtype(gdf['Created Date']):
+        gdf['Created Date'] = pd.to_datetime(gdf['Created Date'], format='%m/%d/%Y %I:%M:%S %p')
+    
+    # 创建时间序列索引
+    time_series = gdf.set_index('Created Date').sort_index()
+    
+    # 使用1小时滑动窗口分析投诉密度 - 修复方法
+    # 正确计算每个窗口内的记录数
+    rolling_counts = time_series.groupby(pd.Grouper(freq='1h')).size().dropna()
+    
+    # 计算统计阈值
+    mean_count = rolling_counts.mean()
+    std_dev = rolling_counts.std()
+    
+    # 如果没有足够数据计算标准差
+    if pd.isna(std_dev) or std_dev == 0:
+        print("警告: 数据不足或标准差为零")
+        return
+    
+    # 设置高密度阈值
+    high_density_threshold = mean_count + 2 * std_dev
+    
+    # 找到所有超过阈值的时间点
+    high_density_points = rolling_counts[rolling_counts > high_density_threshold]
+    
+    if high_density_points.empty:
+        print("没有找到显著的高密度投诉时段")
+        # 打印最密集的5个时间段
+        top_periods = rolling_counts.sort_values(ascending=False).head(5)
+        print("\n投诉量最高的5个时间段:")
+        for time, count in top_periods.items():
+            start_time = time
+            end_time = time + timedelta(hours=1)
+            print(f"  {start_time.strftime('%Y-%m-%d %H:%M')} - {end_time.strftime('%H:%M')}: {count} 起投诉")
+        return
+    
+    # 找出连续的高峰时段
+    high_density_df = high_density_points.reset_index()
+    high_density_df.columns = ['start_time', 'count']
+    high_density_df['end_time'] = high_density_df['start_time'] + timedelta(hours=1)
+    high_density_df['time_diff'] = high_density_df['start_time'].diff().dt.total_seconds() / 60
+    high_density_df['group'] = (high_density_df['time_diff'] > 60).cumsum()  # 60分钟间隔
+    
+    # 分组并找出高峰时段
+    peak_groups = high_density_df.groupby('group').agg(
+        start_time=('start_time', 'min'),
+        end_time=('end_time', 'max'),
+        max_count=('count', 'max'),
+        avg_count=('count', 'mean')
+    )
+    
+    # 计算持续时间
+    peak_groups['duration'] = (peak_groups['end_time'] - peak_groups['start_time']).dt.total_seconds() / 60
+    
+    # 按最大投诉量排序
+    peak_groups = peak_groups.sort_values('max_count', ascending=False)
+    
+    # 打印结果
+    print("="*80)
+    print("高密度投诉时段分析结果")
+    print("="*80)
+    
+    for i, (_, row) in enumerate(peak_groups.iterrows()):
+        print(f"\n高峰时段 {i+1}:")
+        print(f"  开始时间: {row['start_time'].strftime('%Y-%m-%d %H:%M')}")
+        print(f"  结束时间: {row['end_time'].strftime('%Y-%m-%d %H:%M')}")
+        print(f"  持续时间: {int(row['duration'])} 分钟")
+        print(f"  最高投诉量: {int(row['max_count'])}")
+        print(f"  平均投诉量: {row['avg_count']:.1f}")
+        
+        # 获取该时间段内的投诉数据
+        period_df = gdf[(gdf['Created Date'] >= row['start_time']) & 
+                        (gdf['Created Date'] <= row['end_time'])]
+        
+        # 打印地点分布
+        if 'Borough' in period_df.columns:
+            borough_counts = period_df['Borough'].value_counts().head(3)
+            print("\n  行政区分布:")
+            for borough, count in borough_counts.items():
+                print(f"    {borough}: {count} 起投诉")
+        
+        if 'City' in period_df.columns:
+            city_counts = period_df['City'].value_counts().head(3)
+            print("\n  城市分布:")
+            for city, count in city_counts.items():
+                print(f"    {city}: {count} 起投诉")
+        
+        if 'Incident Address' in period_df.columns:
+            address_counts = period_df['Incident Address'].value_counts().head(3)
+            print("\n  地址分布:")
+            for address, count in address_counts.items():
+                print(f"    {address}: {count} 起投诉")
+        
+        # 打印投诉类型分布
+        if 'Descriptor' in period_df.columns:
+            descriptor_counts = period_df['Descriptor'].value_counts().head(3)
+            print("\n  投诉描述分布:")
+            for desc, count in descriptor_counts.items():
+                print(f"    {desc}: {count} 起投诉")
+        
+        print("-"*60)
+    
+    print("="*80)
+
 if __name__=="__main__":
     # 提取前1000条数据
     original_csv_path=r"D:\必须用电脑解决的作业\地理大数据分析\实习一\实习一数据\311_Service_Requests_from_202311_to_202411_20250916.csv"
@@ -645,4 +757,5 @@ if __name__=="__main__":
     # 按小时和星期几分布聚类
     #cluster_hourly_complaint_distributions(gdf, eps=1, min_samples=2)
     # 创建folium地图
-    create_folium_map(gdf)
+    # create_folium_map(gdf)
+    find_high_density_periods(gdf)
