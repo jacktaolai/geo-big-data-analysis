@@ -13,6 +13,15 @@ from folium.plugins import HeatMap, MarkerCluster
 import branca.colormap as cm
 import matplotlib.colors as mcolors
 from datetime import timedelta
+import geopandas as gpd
+from sklearn.cluster import DBSCAN
+import matplotlib.pyplot as plt
+import numpy as np
+
+import numpy as np
+import geopandas as gpd
+import matplotlib.pyplot as plt
+from sklearn.neighbors import NearestNeighbors
 def clip_csv(input_csv_path:str,save_path:str,n:int=1000)->None:
     """从原始一年数据中提取前n条数据，保存为csv文件列"""
     df_top = pd.read_csv(
@@ -56,16 +65,6 @@ def clean_noise_residential_data(input_csv_path: str) -> gpd.GeoDataFrame:
     gdf['Created Date'] = gdf['Created Date'].dt.tz_localize('America/New_York') # 设置为纽约时区
     return gdf
 
-
-import geopandas as gpd
-from sklearn.cluster import DBSCAN
-import matplotlib.pyplot as plt
-import numpy as np
-
-import numpy as np
-import geopandas as gpd
-import matplotlib.pyplot as plt
-from sklearn.neighbors import NearestNeighbors
 
 def visualize_dbscan_params(gdf: gpd.GeoDataFrame, min_samples_list: list=[3, 5, 10]) -> dict:
     """
@@ -430,15 +429,8 @@ def visualize_hourly_complaint_distribution(gdf: gpd.GeoDataFrame):
 
 
 
-import geopandas as gpd
-import matplotlib.colors as mcolors
-from folium import Map, TileLayer, FeatureGroup, CircleMarker, Tooltip, LayerControl
-from folium.plugins import HeatMap, MarkerCluster
-from branca.element import MacroElement, Template
+
 from stat_html import *
-
-
-import geopandas as gpd
 from folium import Map, TileLayer, FeatureGroup, LayerControl, CircleMarker, Tooltip
 from folium.plugins import HeatMap, MarkerCluster
 import matplotlib.colors as mcolors
@@ -643,8 +635,7 @@ def find_high_density_periods(gdf):
     # 创建时间序列索引
     time_series = gdf.set_index('Created Date').sort_index()
     
-    # 使用1小时滑动窗口分析投诉密度 - 修复方法
-    # 正确计算每个窗口内的记录数
+    # 使用计算每小时投诉数量
     rolling_counts = time_series.groupby(pd.Grouper(freq='1h')).size().dropna()
     
     # 计算统计阈值
