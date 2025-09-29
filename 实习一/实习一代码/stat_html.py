@@ -3,8 +3,9 @@ import json
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import geopandas as gpd
 
-def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
+def generate_stats_html(gdf: gpd.GeoDataFrame, noise_count: int, valid_clusters: list, cluster_counts: dict) -> str:
     """
     生成包含统计信息和交互式图表的HTML面板（使用折线图和柱状图）
     

@@ -12,6 +12,7 @@ from folium import Map, CircleMarker, FeatureGroup, LayerControl, Tooltip, TileL
 from folium.plugins import HeatMap, MarkerCluster
 import branca.colormap as cm
 import matplotlib.colors as mcolors
+from datetime import timedelta
 def clip_csv(input_csv_path:str,save_path:str,n:int=1000)->None:
     """从原始一年数据中提取前n条数据，保存为csv文件列"""
     df_top = pd.read_csv(
@@ -61,6 +62,89 @@ from sklearn.cluster import DBSCAN
 import matplotlib.pyplot as plt
 import numpy as np
 
+import numpy as np
+import geopandas as gpd
+import matplotlib.pyplot as plt
+from sklearn.neighbors import NearestNeighbors
+
+def visualize_dbscan_params(gdf: gpd.GeoDataFrame, min_samples_list: list=[3, 5, 10]) -> dict:
+    """
+    为多个min_samples值可视化DBSCAN参数优化,最终根据k距离图拐点推荐eps值
+    
+    参数:
+    gdf: GeoDataFrame, 包含经纬度信息
+    min_samples_list: list, min_samples候选值列表
+    
+    返回:
+    dict: 每个min_samples对应的推荐eps值
+    """
+    # 转换为投影坐标系
+    gdf_proj = gdf.to_crs("EPSG:32618")
+    coords = np.column_stack((gdf_proj.geometry.x, gdf_proj.geometry.y))
+    
+    # 存储推荐eps值
+    recommended_eps = {}
+    
+    # 计算子图布局
+    n = len(min_samples_list)
+    n_cols = min(3, n)  # 每行最多3个子图
+    n_rows = (n + n_cols - 1) // n_cols
+    
+    # 创建图表
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+    if n == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+    
+    # 为每个min_samples值绘制k距离图
+    for i, min_samples in enumerate(min_samples_list):
+        k = min_samples - 1
+        
+        # 计算k距离
+        nn = NearestNeighbors(n_neighbors=k+1)  # +1 因为包含自身
+        nn.fit(coords)
+        distances, _ = nn.kneighbors(coords)
+        k_distances = distances[:, -1]  # 第k个最近邻的距离
+        
+        # 对距离进行降序排序
+        sorted_k_dist = np.sort(k_distances)[::-1]
+        
+        # 自动检测拐点
+        gradients = np.gradient(sorted_k_dist)
+        elbow_index = np.argmax(gradients)
+        eps = sorted_k_dist[elbow_index]
+        recommended_eps[min_samples] = eps
+        
+        # 绘制k距离图
+        ax = axes[i]
+        ax.plot(np.arange(len(sorted_k_dist)), sorted_k_dist, 'b-', linewidth=1.5)
+        
+        # 标记拐点
+        ax.scatter(elbow_index, eps, color='red', s=80, zorder=5)
+        ax.axvline(x=elbow_index, color='red', linestyle='--', alpha=0.7)
+        ax.axhline(y=eps, color='red', linestyle='--', alpha=0.7)
+        
+        # 添加说明文本
+        ax.text(0.05, 0.95, 
+               f'min_samples={min_samples}\neps={eps:.1f}m', 
+               transform=ax.transAxes, 
+               fontsize=10,
+               bbox=dict(facecolor='white', alpha=0.8))
+        
+        # 设置标题和标签
+        ax.set_title(f'k distance graph (k={k})')
+        ax.set_xlabel('Sorted Point Index')
+        ax.set_ylabel(f'Distance to {k}th Nearest Neighbor (m)')
+        ax.grid(True, alpha=0.3)
+    
+    # 隐藏多余的子图
+    for j in range(i+1, len(axes)):
+        fig.delaxes(axes[j])
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return recommended_eps
 def spatial_clustering_analysis(gdf: gpd.GeoDataFrame, eps: float, min_samples: int) -> gpd.GeoDataFrame:
     """
     实现空间聚类分析，使用DBSCAN算法
@@ -72,7 +156,7 @@ def spatial_clustering_analysis(gdf: gpd.GeoDataFrame, eps: float, min_samples: 
     min_samples: int, 邻域内样本数阈值
 
     返回：
-    gpd.GeoDataFrame: 原GeoDataFrame添加'cluster'列后返回
+    gpd.GeoDataFrame: 原GeoDataFrame添加'cluster'列后返回，注意返回坐标系仍为地理坐标系EPSG:4326（WGS84）
     """ 
     # 转换为投影坐标系（EPSG:32618为UTM投影，单位是米，适合计算距离）
     gdf_proj = gdf.to_crs("EPSG:32618")
@@ -280,14 +364,12 @@ def plot_cyclic_complaint_patterns(gdf: gpd.GeoDataFrame) -> dict:
         'daily_counts': daily_counts
     }
 
-def cluster_hourly_complaint_distributions(gdf:gpd.GeoDataFrame, eps:float=0.8, min_samples:int=2)-> np.ndarray:
+def visualize_hourly_complaint_distribution(gdf: gpd.GeoDataFrame):
     """
-    根据投诉时间进行聚类，并用热力图展示投诉分布，用不同颜色的框线展示聚类结果
+    可视化投诉时间分布热力图，显示具体数值
     
     参数:
     gdf: GeoDataFrame, 包含投诉数据（时区已由您处理）
-    eps: DBSCAN算法的邻域半径 (默认0.8)
-    min_samples: 形成核心点所需的最小样本数 (默认2)
     """
     # 提取小时和星期几信息
     gdf['hour'] = gdf['Created Date'].dt.hour
@@ -296,37 +378,19 @@ def cluster_hourly_complaint_distributions(gdf:gpd.GeoDataFrame, eps:float=0.8, 
     # 创建热力图数据
     heatmap_data = gdf.groupby(['day_of_week', 'hour']).size().unstack(fill_value=0)
     
-    # 准备聚类数据 - 每个时间槽作为一个点
-    all_slots = [(d, h) for d in range(7) for h in range(24)]
-    slot_features = []
-    for d, h in all_slots:
-        count = heatmap_data.loc[d, h] if d in heatmap_data.index and h in heatmap_data.columns else 0
-        slot_features.append([d, h, count])
-    
-    # 归一化特征
-    scaler = StandardScaler()
-    scaled_features = scaler.fit_transform(slot_features)
-    
-    # 使用DBSCAN聚类 - 使用更小的eps和min_samples
-    db = DBSCAN(eps=eps, min_samples=min_samples).fit(scaled_features)
-    labels = db.labels_
-    
-    # 创建标签矩阵 (7x24)
-    label_matrix = np.full((7, 24), -1, dtype=int)
-    for idx, (d, h) in enumerate(all_slots):
-        label_matrix[d, h] = labels[idx]
-    
     # 创建热力图
     plt.figure(figsize=(16, 10))
     
     # 使用更清晰的热力图颜色
     heatmap_cmap = LinearSegmentedColormap.from_list('heatmap_cmap', ['#f7fbff', '#6baed6', '#08306b'])
     
-    # 绘制热力图
+    # 绘制热力图并显示数值
     ax = sns.heatmap(
         heatmap_data, 
         cmap=heatmap_cmap,
-        annot=False,
+        annot=True,  # 显示数值
+        fmt="d",    # 整数格式
+        annot_kws={"size": 9, "color": "black", "weight": "bold"},  # 数值格式
         cbar_kws={'label': 'Number of Complaints', 'location': 'top', 'pad': 0.1},
         linewidths=0.5,
         linecolor='lightgray'
@@ -337,60 +401,8 @@ def cluster_hourly_complaint_distributions(gdf:gpd.GeoDataFrame, eps:float=0.8, 
     cbar.ax.set_position([0.15, 1.02, 0.7, 0.03])  # [left, bottom, width, height]
     cbar.ax.xaxis.set_ticks_position('top')
     
-    # 为每个聚类绘制框线
-    unique_labels = set(labels)
-    n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
-    
-    # 使用高对比度的框线颜色
-    cluster_colors = ['#e41a1c', '#377eb8', '#4daf4a', '#984ea3', '#ff7f00', '#ffff33', '#a65628']
-    
-    # 创建图例句柄和标签
-    legend_handles = []
-    
-    # 绘制聚类框线
-    for label in unique_labels:
-        if label == -1:  # 跳过噪声点
-            continue
-            
-        # 找到属于该聚类的所有时间槽
-        cluster_points = np.argwhere(label_matrix == label)
-        
-        if len(cluster_points) == 0:
-            continue
-            
-        # 计算聚类的边界框
-        min_row, min_col = np.min(cluster_points, axis=0)
-        max_row, max_col = np.max(cluster_points, axis=0)
-        
-        # 选择颜色（循环使用）
-        color_idx = label % len(cluster_colors)
-        color = cluster_colors[color_idx]
-        
-        # 绘制矩形框
-        rect = patches.Rectangle(
-            (min_col, min_row), 
-            width=max_col - min_col + 1,
-            height=max_row - min_row + 1,
-            linewidth=3,
-            edgecolor=color,
-            facecolor='none',
-            linestyle='--'  # 使用虚线增加辨识度
-        )
-        ax.add_patch(rect)
-        
-        # 创建图例项
-        legend_handles.append(
-            patches.Patch(
-                edgecolor=color,
-                facecolor='none',
-                linewidth=3,
-                linestyle='--',
-                label=f'Cluster {label}'
-            )
-        )
-    
     # 设置坐标轴标签
-    plt.title("Complaint Time Distribution and Clustering Results", fontsize=16, pad=20)
+    plt.title("Complaint Time Distribution", fontsize=16, pad=20)
     plt.xlabel("Hour", fontsize=12)
     plt.ylabel("Day of Week", fontsize=12)
 
@@ -401,27 +413,20 @@ def cluster_hourly_complaint_distributions(gdf:gpd.GeoDataFrame, eps:float=0.8, 
     # 设置小时标签
     plt.xticks(np.arange(24) + 0.5, range(24), fontsize=10)
     
-    # 添加聚类图例（放在右下角）
-    if legend_handles:
-        plt.legend(
-            handles=legend_handles, 
-            title='Clusters', 
-            loc='lower right',
-            bbox_to_anchor=(1.15, 0.1),
-            frameon=True,
-            framealpha=0.8
-        )
+    # 添加时间分布统计
+    total_complaints = heatmap_data.values.sum()
+    max_hour = heatmap_data.sum(axis=0).idxmax()
+    max_day = heatmap_data.sum(axis=1).idxmax()
+    
+    plt.figtext(0.15, 0.01, 
+               f"Total Complaints: {total_complaints} | Peak Hour: {max_hour}:00 | Peak Day: {day_names[max_day]}",
+               fontsize=12, ha="left")
     
     plt.tight_layout()
-    plt.subplots_adjust(top=0.9)  # 为顶部颜色条留出空间
+    plt.subplots_adjust(top=0.9, bottom=0.1)  # 为顶部颜色条和底部文本留出空间
     plt.show()
     
-    # 打印聚类信息
-    n_noise = list(labels).count(-1)
-    print(f"聚类结果: {n_clusters}个聚类, {n_noise}个噪声点")
-    print(f"聚类标签分布: {np.unique(labels, return_counts=True)}")
-    
-    return label_matrix
+    return heatmap_data
 
 
 
@@ -498,7 +503,6 @@ def create_folium_map(
         cluster_counts[cluster_id] = gdf[gdf['cluster'] == cluster_id].shape[0]
 
     # 高区分度颜色库 - 使用与热力图区分度高的颜色方案
-    # 使用新的colormaps API避免弃用警告
     try:
         # 使用Set3调色板，提供12种高区分度颜色
         if len(valid_clusters) <= 12:
@@ -567,7 +571,7 @@ def create_folium_map(
     all_clusters_layer.add_to(m)
 
     # 所有点综合显示图层（按类别着色） - 移除未聚类点
-    all_points_layer = FeatureGroup(name='所有点（按类别着色）', show=False)
+    all_points_layer = FeatureGroup(name='所有点（按类别着色）', show=True)
     
     for _, row in gdf.iterrows():
         # 跳过未聚类点（cluster == -1）
@@ -610,7 +614,7 @@ def create_folium_map(
     # 按数量排序聚类分布
     cluster_distribution.sort(key=lambda x: x['count'], reverse=True)
     
-    # TODO: 通过读入文件创建统计说明信息
+    # 生成统计信息HTML（侧拉面板）
     html_content = generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts)
     with open("stats_panel.html", "w", encoding="utf-8") as f:
         f.write(html_content)
@@ -619,8 +623,6 @@ def create_folium_map(
     LayerControl(position='topright', collapsed=False).add_to(m)
     # 将统计信息添加到地图
     m.get_root().html.add_child(stats_element)
-
-
 
     # 保存地图
     map_filename = f'noise_clusters_{map_style}.html'
@@ -648,13 +650,10 @@ def find_high_density_periods(gdf):
     # 计算统计阈值
     mean_count = rolling_counts.mean()
     std_dev = rolling_counts.std()
-    
-    # 如果没有足够数据计算标准差
+    # 识别两倍标准差外的异常值，同时做容错处理
     if pd.isna(std_dev) or std_dev == 0:
         print("警告: 数据不足或标准差为零")
         return
-    
-    # 设置高密度阈值
     high_density_threshold = mean_count + 2 * std_dev
     
     # 找到所有超过阈值的时间点
@@ -697,7 +696,11 @@ def find_high_density_periods(gdf):
     print("高密度投诉时段分析结果")
     print("="*80)
     
+    num=0
     for i, (_, row) in enumerate(peak_groups.iterrows()):
+        num+=1
+        if num>3:
+            break
         print(f"\n高峰时段 {i+1}:")
         print(f"  开始时间: {row['start_time'].strftime('%Y-%m-%d %H:%M')}")
         print(f"  结束时间: {row['end_time'].strftime('%Y-%m-%d %H:%M')}")
@@ -743,19 +746,20 @@ if __name__=="__main__":
     # 提取前1000条数据
     original_csv_path=r"D:\必须用电脑解决的作业\地理大数据分析\实习一\实习一数据\311_Service_Requests_from_202311_to_202411_20250916.csv"
     cliped_csv_path=r"D:\必须用电脑解决的作业\地理大数据分析\实习一\实习一数据\311_Service_Requests_from_202311_to_202411_top1000.csv"
-    # clip_csv(original_csv_path,cliped_csv_path,n=100000)
+    clip_csv(original_csv_path,cliped_csv_path,n=100000)
 
     # 数据清洗
     gdf=clean_noise_residential_data(cliped_csv_path)
-
+    visualize_dbscan_params(gdf)
     # 空间聚类分析
+    # (300,3)(355,5)(500,10)
     gdf=spatial_clustering_analysis(gdf, eps=500, min_samples=5)
     # 绘制雷达图
-    #plot_cyclic_complaint_patterns(gdf)
+    plot_cyclic_complaint_patterns(gdf)
     # 按小时投诉数量模式聚类
-    #plot_hourly_and_daily_complaint_patterns(gdf)
+    plot_hourly_and_daily_complaint_patterns(gdf)
     # 按小时和星期几分布聚类
-    #cluster_hourly_complaint_distributions(gdf, eps=1, min_samples=2)
+    visualize_hourly_complaint_distribution(gdf)
     # 创建folium地图
-    # create_folium_map(gdf)
+    create_folium_map(gdf)
     find_high_density_periods(gdf)
