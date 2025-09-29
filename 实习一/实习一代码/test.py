@@ -430,6 +430,7 @@ import matplotlib.colors as mcolors
 from folium import Map, TileLayer, FeatureGroup, CircleMarker, Tooltip, LayerControl
 from folium.plugins import HeatMap, MarkerCluster
 from branca.element import MacroElement, Template
+from stat_html import *
 
 
 import geopandas as gpd
@@ -513,7 +514,6 @@ def create_folium_map(
                 base_cmap = plt.colormaps['Set3'].resample(12)
                 color_palette = [mcolors.to_hex(base_cmap(i % 12)) for i in range(len(valid_clusters))]
     except:
-        # 备用方案：使用与热力图对比鲜明的颜色
         base_colors = ['#4B0082', '#008000', '#FF00FF', '#800000', '#00FF00', 
                       '#000080', '#FF0000', '#808000', '#00FFFF', '#FFA500']
         if len(valid_clusters) > len(base_colors):
@@ -610,144 +610,17 @@ def create_folium_map(
     # 按数量排序聚类分布
     cluster_distribution.sort(key=lambda x: x['count'], reverse=True)
     
-    # 创建统计信息HTML
-    stats_html = f"""
-    <div id="stats-panel" style="
-        position: fixed;
-        top: 10px;
-        left: 10px;
-        width: 300px;
-        background: rgba(255, 255, 255, 0.9);
-        border-radius: 8px;
-        padding: 15px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-        z-index: 1000;
-        font-family: Arial, sans-serif;
-        max-height: 80vh;
-        overflow-y: auto;
-    ">
-        <div style="
-            font-size: 18px;
-            font-weight: bold;
-            margin-bottom: 15px;
-            color: #333;
-            border-bottom: 1px solid #eee;
-            padding-bottom: 8px;
-        ">
-            投诉数据统计
-        </div>
-        
-        <div style="margin-bottom: 15px;">
-            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                <span style="font-weight: bold;">总投诉量:</span>
-                <span style="font-weight: bold; color: #3498db;">{total_points}</span>
-            </div>
-            
-            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                <span>已聚类数量:</span>
-                <span>{clustered_count} ({clustered_percentage:.1f}%)</span>
-            </div>
-            
-            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                <span>未聚类数量:</span>
-                <span>{noise_count} ({(noise_count/total_points*100):.1f}%)</span>
-            </div>
-            
-            <div style="display: flex; justify-content: space-between;">
-                <span>聚类数量:</span>
-                <span>{len(valid_clusters)}</span>
-            </div>
-        </div>
-        
-        <div style="margin-bottom: 15px;">
-            <div style="font-weight: bold; margin-bottom: 8px;">聚类分布</div>
-            <table style="width: 100%; border-collapse: collapse;">
-                <tr style="background-color: #f8f9fa;">
-                    <th style="padding: 6px; text-align: left; border-bottom: 1px solid #eee;">聚类ID</th>
-                    <th style="padding: 6px; text-align: right; border-bottom: 1px solid #eee;">数量</th>
-                    <th style="padding: 6px; text-align: right; border-bottom: 1px solid #eee;">占比</th>
-                </tr>
-    """
-    
-    # 添加聚类分布行
-    for cluster in cluster_distribution[:10]:  # 最多显示前10个聚类
-        stats_html += f"""
-        <tr>
-            <td style="padding: 6px; border-bottom: 1px solid #eee;">{cluster['id']}</td>
-            <td style="padding: 6px; text-align: right; border-bottom: 1px solid #eee;">{cluster['count']}</td>
-            <td style="padding: 6px; text-align: right; border-bottom: 1px solid #eee;">{cluster['percentage']:.1f}%</td>
-        </tr>
-        """
-    
-    # 如果聚类数量超过10个，添加提示
-    if len(cluster_distribution) > 10:
-        stats_html += f"""
-        <tr>
-            <td colspan="3" style="padding: 6px; text-align: center; border-bottom: 1px solid #eee;">
-                还有 {len(cluster_distribution) - 10} 个聚类未显示
-            </td>
-        </tr>
-        """
-    
-    stats_html += """
-            </table>
-        </div>
-        
-        <div>
-            <div style="font-weight: bold; margin-bottom: 8px;">热点区域</div>
-            <ol style="padding-left: 20px; margin: 0;">
-                <li>市中心商业区 (285)</li>
-                <li>老旧居民区 (243)</li>
-                <li>工业区周边 (198)</li>
-                <li>新兴住宅区 (156)</li>
-                <li>交通枢纽 (132)</li>
-            </ol>
-        </div>
-        
-        <div style="margin-top: 15px; font-size: 12px; color: #777; text-align: center;">
-            数据更新时间: <span id="update-time"></span>
-        </div>
-    </div>
-    
-    <button id="toggle-stats" style="
-        position: fixed;
-        top: 10px;
-        left: 10px;
-        background: white;
-        border: none;
-        border-radius: 4px;
-        padding: 5px 10px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-        z-index: 1001;
-        cursor: pointer;
-    ">
-        📊
-    </button>
-    
-    <script>
-        // 显示更新时间
-        document.getElementById('update-time').textContent = new Date().toLocaleString();
-        
-        // 添加折叠/展开功能
-        const statsPanel = document.getElementById('stats-panel');
-        const toggleBtn = document.getElementById('toggle-stats');
-        
-        toggleBtn.addEventListener('click', function() {
-            if (statsPanel.style.display === 'none') {
-                statsPanel.style.display = 'block';
-            } else {
-                statsPanel.style.display = 'none';
-            }
-        });
-    </script>
-    """
-    
-    # 将统计信息添加到地图
-    stats_element = Element(stats_html)
-    m.get_root().html.add_child(stats_element)
-
+    # TODO: 通过读入文件创建统计说明信息
+    html_content = generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts)
+    with open("stats_panel.html", "w", encoding="utf-8") as f:
+        f.write(html_content)
+    stats_element = Element(html_content)
     # 图层控制器
     LayerControl(position='topright', collapsed=False).add_to(m)
+    # 将统计信息添加到地图
+    m.get_root().html.add_child(stats_element)
+
+
 
     # 保存地图
     map_filename = f'noise_clusters_{map_style}.html'
