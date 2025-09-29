@@ -6,7 +6,7 @@ from datetime import datetime
 
 def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
     """
-    生成包含统计信息和交互式图表的HTML面板（使用折线图和ECharts）
+    生成包含统计信息和交互式图表的HTML面板（使用折线图和柱状图）
     
     参数:
     gdf: GeoDataFrame, 包含投诉数据
@@ -17,6 +17,9 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
     返回:
     包含完整统计面板的HTML字符串
     """
+    # 确保正确的时间格式
+    gdf['Created Date'] = pd.to_datetime(gdf['Created Date'], format='%m/%d/%Y %I:%M:%S %p', errors='coerce')
+    
     # 计算基本统计数据
     total_points = len(gdf)
     clustered_count = total_points - noise_count
@@ -32,20 +35,16 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
     for cluster_id in valid_clusters:
         count = cluster_counts[cluster_id]
         percentage = (count / clustered_count * 100) if clustered_count > 0 else 0
-        # 转换为 Python 原生类型
         cluster_distribution.append({
             'id': cluster_id,
-            'count': int(count),  # 转换为 int
-            'percentage': float(percentage)  # 转换为 float
+            'count': int(count),
+            'percentage': float(percentage)
         })
     
     # 按数量排序聚类分布
     cluster_distribution.sort(key=lambda x: x['count'], reverse=True)
     
     # 计算周期性投诉模式数据
-    if not pd.api.types.is_datetime64_any_dtype(gdf['Created Date']):
-        gdf['Created Date'] = pd.to_datetime(gdf['Created Date'])
-    
     gdf['hour'] = gdf['Created Date'].dt.hour
     gdf['day_of_week'] = gdf['Created Date'].dt.dayofweek
     
@@ -54,13 +53,41 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
     
     # 准备小时数据
     hours = list(range(24))
-    # 将 NumPy 类型转换为 Python 原生类型
     hour_values = [int(hourly_counts.get(h, 0)) for h in hours]
     
     # 准备星期数据
     day_names = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
-    # 将 NumPy 类型转换为 Python 原生类型
     day_values = [int(daily_counts.get(d, 0)) for d in range(7)]
+    
+    # 计算热点区域
+    hotspots = []
+    for i, cluster in enumerate(cluster_distribution[:5]):
+        hotspots.append({
+            'name': f'热点区域 {i+1}',
+            'count': cluster['count']
+        })
+    
+    # 计算响应时间（使用 Created Date 和 Closed Date）
+    if 'Closed Date' in gdf.columns:
+        gdf['Closed Date'] = pd.to_datetime(gdf['Closed Date'], format='%m/%d/%Y %I:%M:%S %p', errors='coerce')
+        
+        # 规范化时间为无时区（naive）
+        gdf['Created Date'] = gdf['Created Date'].dt.tz_localize(None)
+        gdf['Closed Date'] = gdf['Closed Date'].dt.tz_localize(None)
+        
+        # 计算响应时间
+        gdf['Response Time'] = (gdf['Closed Date'] - gdf['Created Date']).dt.total_seconds() / 3600
+        avg_response_time = gdf['Response Time'].mean()
+        avg_response_time = f"{avg_response_time:.1f}小时" if not pd.isna(avg_response_time) else "N/A"
+    else:
+        avg_response_time = "N/A"
+    
+    # 计算解决率
+    if 'Status' in gdf.columns:
+        resolution_rate = (gdf['Status'].str.lower() == 'closed').sum() / len(gdf) * 100
+        resolution_rate = f"{resolution_rate:.1f}%"
+    else:
+        resolution_rate = "N/A"
     
     # 格式化更新时间
     update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -83,9 +110,12 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
         'hour_values_json': json.dumps(hour_values),
         'day_names_json': json.dumps(day_names),
         'day_values_json': json.dumps(day_values),
+        'hotspots': hotspots,
+        'avg_response_time': avg_response_time,
+        'resolution_rate': resolution_rate
     }
     
-    # Jinja2 模板
+    # Jinja2 模板（保持不变）
     template_str = """
     <!DOCTYPE html>
     <html>
@@ -102,12 +132,13 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
             
             body {
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background-color: #f8f9fa;
             }
             
             #stats-container {
                 position: fixed;
-                top: 10px;
-                left: 10px;
+                bottom: 20px;
+                left: 20px;
                 z-index: 1000;
                 display: flex;
                 transition: transform 0.4s cubic-bezier(0.25, 0.1, 0.25, 1);
@@ -115,39 +146,43 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
             }
             
             #stats-container.collapsed {
-                transform: translateX(-330px);
-            }
-            
-            #toggle-stats {
-                background: white;
-                border: none;
-                border-radius: 4px 0 0 4px;
-                padding: 8px 12px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.15);
-                cursor: pointer;
-                height: 40px;
-                align-self: center;
-                transition: all 0.3s ease;
-                z-index: 1001;
-            }
-            
-            #toggle-stats:hover {
-                background: #f5f5f5;
+                transform: translateX(-420px);
             }
             
             #stats-panel {
-                width: 320px;
+                width: 420px;
                 background: rgba(255, 255, 255, 0.97);
-                border-radius: 0 8px 8px 0;
+                border-radius: 8px;
                 box-shadow: 0 4px 20px rgba(0,0,0,0.15);
                 overflow: hidden;
                 display: flex;
                 flex-direction: column;
                 backdrop-filter: blur(5px);
+                border: 1px solid #e0e0e0;
+                position: relative;
+            }
+            
+            #toggle-stats {
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                background: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                z-index: 1001;
+                cursor: pointer;
+                transition: all 0.3s ease;
+            }
+            
+            #toggle-stats:hover {
+                background: #f5f5f5;
+                transform: scale(1.05);
             }
             
             .stats-header {
-                background: linear-gradient(135deg, #3498db, #2c3e50);
+                background: linear-gradient(135deg, #2c3e50, #3498db);
                 color: white;
                 padding: 15px;
                 display: flex;
@@ -156,34 +191,23 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
             }
             
             .stats-header h2 {
-                font-size: 18px;
+                font-size: 20px;
                 font-weight: 600;
                 margin: 0;
-            }
-            
-            .close-btn {
-                background: none;
-                border: none;
-                color: white;
-                font-size: 18px;
-                cursor: pointer;
-                width: 30px;
-                height: 30px;
-                border-radius: 50%;
                 display: flex;
                 align-items: center;
-                justify-content: center;
-                transition: background 0.2s;
             }
             
-            .close-btn:hover {
-                background: rgba(255,255,255,0.2);
+            .stats-header h2:before {
+                content: '📊';
+                margin-right: 10px;
+                font-size: 24px;
             }
             
             .stats-content {
                 padding: 15px;
                 overflow-y: auto;
-                max-height: 75vh;
+                max-height: 80vh;
             }
             
             .stats-grid {
@@ -194,26 +218,42 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
             }
             
             .stat-card {
-                background: #f8f9fa;
-                border-radius: 8px;
-                padding: 12px;
-                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-                transition: transform 0.2s;
+                background: #ffffff;
+                border-radius: 10px;
+                padding: 15px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                transition: all 0.3s ease;
+                border-left: 4px solid #3498db;
             }
             
             .stat-card:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 3px 6px rgba(0,0,0,0.08);
+                transform: translateY(-3px);
+                box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            }
+            
+            .stat-card.highlight {
+                border-left-color: #e74c3c;
+            }
+            
+            .stat-card.success {
+                border-left-color: #2ecc71;
             }
             
             .stat-label {
-                font-size: 13px;
+                font-size: 14px;
                 color: #6c757d;
-                margin-bottom: 5px;
+                margin-bottom: 8px;
+                display: flex;
+                align-items: center;
+            }
+            
+            .stat-label i {
+                margin-right: 6px;
+                font-size: 16px;
             }
             
             .stat-value {
-                font-size: 20px;
+                font-size: 24px;
                 font-weight: 700;
                 color: #2c3e50;
             }
@@ -222,35 +262,58 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
                 color: #3498db;
             }
             
+            .stat-description {
+                font-size: 12px;
+                color: #6c757d;
+                margin-top: 5px;
+            }
+            
             .section-title {
-                font-size: 15px;
+                font-size: 16px;
                 font-weight: 600;
                 color: #2c3e50;
-                margin: 15px 0 10px;
-                padding-bottom: 5px;
-                border-bottom: 1px solid #eee;
+                margin: 20px 0 12px;
+                padding-bottom: 8px;
+                border-bottom: 2px solid #eaeaea;
+                display: flex;
+                align-items: center;
+            }
+            
+            .section-title:before {
+                content: '▸';
+                margin-right: 8px;
+                color: #3498db;
             }
             
             .chart-container {
-                height: 180px;
-                margin-bottom: 15px;
+                height: 200px;
+                margin-bottom: 20px;
+                background: white;
+                border-radius: 8px;
+                padding: 10px;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.05);
             }
             
             .cluster-table {
                 width: 100%;
                 border-collapse: collapse;
-                font-size: 13px;
+                font-size: 14px;
+                background: white;
+                border-radius: 8px;
+                overflow: hidden;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.05);
             }
             
             .cluster-table th {
                 background-color: #f1f5f9;
                 text-align: left;
-                padding: 8px;
+                padding: 12px 15px;
                 font-weight: 600;
+                color: #2c3e50;
             }
             
             .cluster-table td {
-                padding: 8px;
+                padding: 10px 15px;
                 border-bottom: 1px solid #eee;
             }
             
@@ -261,6 +324,7 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
             .count-cell {
                 text-align: right;
                 font-weight: 600;
+                color: #3498db;
             }
             
             .percentage-cell {
@@ -271,93 +335,156 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
             .hotspots {
                 display: grid;
                 grid-template-columns: repeat(2, 1fr);
-                gap: 10px;
-                margin-top: 10px;
+                gap: 12px;
+                margin-top: 15px;
             }
             
             .hotspot-card {
-                background: #f8f9fa;
-                border-radius: 6px;
-                padding: 10px;
-                font-size: 13px;
+                background: white;
+                border-radius: 8px;
+                padding: 15px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                transition: all 0.3s ease;
+            }
+            
+            .hotspot-card:hover {
+                transform: translateY(-3px);
+                box-shadow: 0 5px 15px rgba(0,0,0,0.1);
             }
             
             .hotspot-name {
                 font-weight: 600;
-                margin-bottom: 5px;
+                margin-bottom: 8px;
                 color: #2c3e50;
+                display: flex;
+                align-items: center;
+            }
+            
+            .hotspot-name:before {
+                content: '📍';
+                margin-right: 6px;
             }
             
             .hotspot-count {
                 color: #3498db;
                 font-weight: 700;
+                font-size: 20px;
+            }
+            
+            .hotspot-description {
+                font-size: 12px;
+                color: #6c757d;
+                margin-top: 5px;
+            }
+            
+            .kpi-container {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 15px;
+                margin: 20px 0;
+            }
+            
+            .kpi-card {
+                background: white;
+                border-radius: 8px;
+                padding: 15px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                text-align: center;
+            }
+            
+            .kpi-value {
+                font-size: 24px;
+                font-weight: 700;
+                color: #3498db;
+                margin: 10px 0;
+            }
+            
+            .kpi-label {
+                font-size: 14px;
+                color: #6c757d;
             }
             
             .update-time {
                 text-align: center;
                 font-size: 12px;
                 color: #6c757d;
-                margin-top: 15px;
-                padding-top: 10px;
+                margin-top: 20px;
+                padding-top: 15px;
                 border-top: 1px solid #eee;
             }
             
             .progress-bar {
-                height: 6px;
+                height: 8px;
                 background: #e9ecef;
-                border-radius: 3px;
-                margin-top: 5px;
+                border-radius: 4px;
+                margin-top: 8px;
                 overflow: hidden;
             }
             
             .progress {
                 height: 100%;
                 background: linear-gradient(90deg, #3498db, #2ecc71);
-                border-radius: 3px;
+                border-radius: 4px;
+                transition: width 0.5s ease;
             }
         </style>
     </head>
     <body>
         <div id="stats-container">
-            <button id="toggle-stats" title="显示/隐藏统计面板">📊</button>
-            
             <div id="stats-panel">
+                <button id="toggle-stats" title="折叠/展开统计面板">X</button>
                 <div class="stats-header">
-                    <h2>投诉数据统计</h2>
-                    <button class="close-btn">✕</button>
+                    <h2>投诉数据分析面板</h2>
                 </div>
                 
                 <div class="stats-content">
                     <div class="stats-grid">
                         <div class="stat-card">
-                            <div class="stat-label">总投诉量</div>
+                            <div class="stat-label">📋 总投诉量</div>
                             <div class="stat-value stat-highlight">{{ total_points }}</div>
+                            <div class="stat-description">涵盖所有区域和类型</div>
                         </div>
                         
-                        <div class="stat-card">
-                            <div class="stat-label">已聚类数量</div>
-                            <div class="stat-value">{{ clustered_count }}</div>
-                            <div class="progress-bar">
-                                <div class="progress" style="width: {{ clustered_percentage }}%"></div>
-                            </div>
-                        </div>
-                        
-                        <div class="stat-card">
-                            <div class="stat-label">未聚类数量</div>
+                        <div class="stat-card highlight">
+                            <div class="stat-label">⚠️ 未聚类数量</div>
                             <div class="stat-value">{{ noise_count }}</div>
                             <div class="progress-bar">
                                 <div class="progress" style="width: {{ noise_percentage }}%"></div>
                             </div>
+                            <div class="stat-description">占比 {{ noise_percentage | round(1) }}%</div>
                         </div>
                         
                         <div class="stat-card">
-                            <div class="stat-label">聚类数量</div>
+                            <div class="stat-label">🔍 已聚类数量</div>
+                            <div class="stat-value">{{ clustered_count }}</div>
+                            <div class="progress-bar">
+                                <div class="progress" style="width: {{ clustered_percentage }}%"></div>
+                            </div>
+                            <div class="stat-description">占比 {{ clustered_percentage | round(1) }}%</div>
+                        </div>
+                        
+                        <div class="stat-card success">
+                            <div class="stat-label">🗺️ 聚类数量</div>
                             <div class="stat-value">{{ cluster_count }}</div>
+                            <div class="stat-description">识别出的热点区域</div>
                         </div>
                     </div>
                     
-                    <div class="section-title">投诉时间分布</div>
+                    <div class="kpi-container">
+                        <div class="kpi-card">
+                            <div class="kpi-label">⏱️ 平均响应时间</div>
+                            <div class="kpi-value">{{ avg_response_time }}</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">✅ 问题解决率</div>
+                            <div class="kpi-value">{{ resolution_rate }}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="section-title">投诉时间分布（按小时）</div>
                     <div class="chart-container" id="hour-chart"></div>
+                    
+                    <div class="section-title">投诉时间分布（按星期）</div>
                     <div class="chart-container" id="day-chart"></div>
                     
                     <div class="section-title">聚类分布</div>
@@ -382,22 +509,13 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
                     
                     <div class="section-title">热点区域</div>
                     <div class="hotspots">
+                        {% for hotspot in hotspots %}
                         <div class="hotspot-card">
-                            <div class="hotspot-name">市中心商业区</div>
-                            <div class="hotspot-count">285 起</div>
+                            <div class="hotspot-name">{{ hotspot.name }}</div>
+                            <div class="hotspot-count">{{ hotspot.count }} 起</div>
+                            <div class="hotspot-description">需要重点关注区域</div>
                         </div>
-                        <div class="hotspot-card">
-                            <div class="hotspot-name">老旧居民区</div>
-                            <div class="hotspot-count">243 起</div>
-                        </div>
-                        <div class="hotspot-card">
-                            <div class="hotspot-name">工业区周边</div>
-                            <div class="hotspot-count">198 起</div>
-                        </div>
-                        <div class="hotspot-card">
-                            <div class="hotspot-name">新兴住宅区</div>
-                            <div class="hotspot-count">156 起</div>
-                        </div>
+                        {% endfor %}
                     </div>
                     
                     <div class="update-time">
@@ -417,12 +535,13 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
                         text: '按小时投诉量',
                         left: 'center',
                         textStyle: {
-                            fontSize: 13,
+                            fontSize: 14,
                             fontWeight: 'normal'
                         }
                     },
                     tooltip: {
-                        trigger: 'axis'
+                        trigger: 'axis',
+                        formatter: '{b}时: {c} 起投诉'
                     },
                     grid: {
                         left: '3%',
@@ -460,7 +579,7 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
                         type: 'line',
                         smooth: true,
                         symbol: 'circle',
-                        symbolSize: 6,
+                        symbolSize: 8,
                         data: {{ hour_values_json | safe }},
                         lineStyle: {
                             width: 3,
@@ -485,12 +604,13 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
                         text: '按星期投诉量',
                         left: 'center',
                         textStyle: {
-                            fontSize: 13,
+                            fontSize: 14,
                             fontWeight: 'normal'
                         }
                     },
                     tooltip: {
-                        trigger: 'axis'
+                        trigger: 'axis',
+                        formatter: '{b}: {c} 起投诉'
                     },
                     grid: {
                         left: '3%',
@@ -508,7 +628,7 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
                             }
                         },
                         axisLabel: {
-                            fontSize: 10
+                            fontSize: 11
                         }
                     },
                     yAxis: {
@@ -546,7 +666,6 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
             // 添加折叠/展开功能
             const statsContainer = document.getElementById('stats-container');
             const toggleBtn = document.getElementById('toggle-stats');
-            const closeBtn = document.querySelector('.close-btn');
             
             // 初始状态为展开
             let isCollapsed = false;
@@ -554,21 +673,29 @@ def generate_stats_html(gdf, noise_count, valid_clusters, cluster_counts):
             function togglePanel() {
                 isCollapsed = !isCollapsed;
                 statsContainer.classList.toggle('collapsed', isCollapsed);
-                toggleBtn.title = isCollapsed ? "显示统计面板" : "隐藏统计面板";
                 
-                // 添加按钮动画
                 if (isCollapsed) {
-                    toggleBtn.innerHTML = '📈';
+                    toggleBtn.title = "展开统计面板";
                 } else {
-                    toggleBtn.innerHTML = '📊';
+                    toggleBtn.title = "折叠统计面板";
                 }
             }
             
             toggleBtn.addEventListener('click', togglePanel);
-            closeBtn.addEventListener('click', togglePanel);
             
             // 初始化图表
-            document.addEventListener('DOMContentLoaded', initCharts);
+            document.addEventListener('DOMContentLoaded', function() {
+                initCharts();
+                
+                // 添加进度条动画
+                document.querySelectorAll('.progress').forEach(progress => {
+                    const width = progress.style.width;
+                    progress.style.width = '0';
+                    setTimeout(() => {
+                        progress.style.width = width;
+                    }, 300);
+                });
+            });
         </script>
     </body>
     </html>
