@@ -568,3 +568,228 @@ def save_bias_analysis_results(bias_results, output_path=None):
     print(f"分析摘要已保存到: {summary_file}")
     
     return output_file, summary_file
+
+def analyze_coordinate_cleaning_impact(business_df, merged_df=None):
+    """
+    专门分析坐标清洗对数据分析结果的影响
+    """
+    print("=" * 60)
+    print("坐标清洗影响分析")
+    print("=" * 60)
+    
+    impact_results = {
+        'removed_percentage': 0,
+        'stars_difference': 0,
+        'reviews_difference': 0,
+        'potential_bias': False,
+        'warnings': []
+    }
+    
+    # 1. 检查是否有被移除的数据文件
+    removed_file = os.path.join(INTERMEDIATE_PATH, "business_coordinates_removed.csv")
+    
+    if os.path.exists(removed_file):
+        print("\n1. 分析坐标清洗移除的数据:")
+        print("-" * 40)
+        
+        removed_data = pd.read_csv(removed_file)
+        total_before_cleaning = len(business_df) + len(removed_data)
+        
+        if total_before_cleaning > 0:
+            removal_percentage = len(removed_data) / total_before_cleaning * 100
+            impact_results['removed_percentage'] = removal_percentage
+            
+            print(f"  坐标清洗前餐厅总数: {total_before_cleaning}")
+            print(f"  被移除的餐厅数量: {len(removed_data)}")
+            print(f"  移除比例: {removal_percentage:.2f}%")
+            
+            if removal_percentage > 10:
+                impact_results['warnings'].append(f"坐标清洗移除了 {removal_percentage:.1f}% 的数据，比例较高")
+                print(f"  ⚠️  警告: 坐标清洗移除了 {removal_percentage:.2f}% 的数据，可能影响分析代表性")
+            elif removal_percentage > 5:
+                print(f"  ⚠️  注意: 坐标清洗移除了 {removal_percentage:.2f}% 的数据")
+            else:
+                print(f"  ✓ 坐标清洗移除比例较低 ({removal_percentage:.2f}%)，影响较小")
+            
+            # 分析被移除餐厅的特征
+            if len(removed_data) > 0 and len(business_df) > 0:
+                # 星级比较
+                if 'stars' in removed_data.columns and 'stars' in business_df.columns:
+                    avg_stars_removed = removed_data['stars'].mean()
+                    avg_stars_kept = business_df['stars'].mean()
+                    stars_diff = abs(avg_stars_removed - avg_stars_kept)
+                    impact_results['stars_difference'] = stars_diff
+                    
+                    print(f"\n  星级分布比较:")
+                    print(f"    被移除餐厅平均星级: {avg_stars_removed:.2f}")
+                    print(f"    保留餐厅平均星级: {avg_stars_kept:.2f}")
+                    print(f"    差异: {stars_diff:.2f}")
+                    
+                    if stars_diff > 0.5:
+                        impact_results['potential_bias'] = True
+                        impact_results['warnings'].append(f"被移除餐厅平均星级 ({avg_stars_removed:.2f}) 与保留餐厅 ({avg_stars_kept:.2f}) 差异明显")
+                        print(f"    ⚠️  警告: 星级差异明显，可能导致星级分布偏倚")
+                    else:
+                        print(f"    ✓ 星级差异较小，影响不大")
+                
+                # 评论数比较
+                if 'review_count' in removed_data.columns and 'review_count' in business_df.columns:
+                    avg_reviews_removed = removed_data['review_count'].mean()
+                    avg_reviews_kept = business_df['review_count'].mean()
+                    reviews_diff = abs(avg_reviews_removed - avg_reviews_kept)
+                    impact_results['reviews_difference'] = reviews_diff
+                    
+                    print(f"\n  评论数量比较:")
+                    print(f"    被移除餐厅平均评论数: {avg_reviews_removed:.2f}")
+                    print(f"    保留餐厅平均评论数: {avg_reviews_kept:.2f}")
+                    print(f"    差异: {reviews_diff:.2f}")
+                    
+                    if reviews_diff > avg_reviews_kept * 0.5:  # 如果差异超过保留餐厅平均评论数的50%
+                        impact_results['potential_bias'] = True
+                        impact_results['warnings'].append(f"被移除餐厅评论数 ({avg_reviews_removed:.2f}) 与保留餐厅 ({avg_reviews_kept:.2f}) 差异明显")
+                        print(f"    ⚠️  警告: 评论数差异明显，可能导致热门度分析偏倚")
+                    else:
+                        print(f"    ✓ 评论数差异较小，影响不大")
+                
+                # 类别分析（如果类别信息存在）
+                if 'categories' in removed_data.columns:
+                    # 提取被移除餐厅的主要类别
+                    removed_categories = []
+                    for cats in removed_data['categories'].dropna():
+                        if isinstance(cats, str):
+                            removed_categories.extend([cat.strip() for cat in cats.split(',')])
+                    
+                    if removed_categories:
+                        from collections import Counter
+                        removed_category_counts = Counter(removed_categories)
+                        top_removed_categories = removed_category_counts.most_common(5)
+                        
+                        print(f"\n  被移除餐厅主要类别 (前5):")
+                        for category, count in top_removed_categories:
+                            print(f"    {category}: {count} 家")
+        
+        else:
+            print("  无坐标清洗移除数据记录")
+    else:
+        print("  未找到坐标清洗移除数据文件")
+        print("  注意: 这可能意味着坐标清洗没有移除数据，或者移除数据未被保存")
+    
+    # 2. 分析对地理分析的影响
+    print("\n2. 对地理分析的影响评估:")
+    print("-" * 40)
+    
+    if 'latitude' in business_df.columns and 'longitude' in business_df.columns:
+        # 计算地理覆盖范围
+        lat_min, lat_max = business_df['latitude'].min(), business_df['latitude'].max()
+        lon_min, lon_max = business_df['longitude'].min(), business_df['longitude'].max()
+        
+        print(f"  餐厅地理覆盖范围:")
+        print(f"    纬度: {lat_min:.4f}° - {lat_max:.4f}°")
+        print(f"    经度: {lon_min:.4f}° - {lon_max:.4f}°")
+        
+        # 计算地理中心
+        lat_center = business_df['latitude'].mean()
+        lon_center = business_df['longitude'].mean()
+        print(f"  地理中心: ({lat_center:.4f}°, {lon_center:.4f}°)")
+        
+        # 检查地理分布是否均匀
+        lat_std = business_df['latitude'].std()
+        lon_std = business_df['longitude'].std()
+        print(f"  地理分布标准差: 纬度 {lat_std:.4f}°, 经度 {lon_std:.4f}°")
+        
+        if lat_std < 0.01 or lon_std < 0.01:
+            impact_results['warnings'].append("餐厅地理分布过于集中")
+            print(f"  ⚠️  警告: 地理分布过于集中，可能无法代表整个城市")
+        else:
+            print(f"  ✓ 地理分布相对分散，代表性较好")
+    
+    # 3. 分析对后续分析的影响
+    print("\n3. 对后续分析的影响总结:")
+    print("-" * 40)
+    
+    if impact_results['potential_bias']:
+        print(f"  ⚠️  潜在偏倚: 坐标清洗可能引入了系统性偏倚")
+        print(f"  建议:")
+        print(f"    1. 在分析结论中说明坐标清洗的影响")
+        print(f"    2. 对于星级和评论数的分析，考虑坐标清洗的潜在影响")
+        print(f"    3. 地理分析可能无法代表被移除的餐厅")
+    else:
+        print(f"  ✓ 坐标清洗影响较小，对后续分析影响有限")
+    
+    if impact_results['warnings']:
+        print(f"\n  主要警告:")
+        for i, warning in enumerate(impact_results['warnings'], 1):
+            print(f"    {i}. {warning}")
+    
+    # 4. 可视化影响分析
+    if len(business_df) > 0 and os.path.exists(removed_file):
+        removed_data = pd.read_csv(removed_file)
+        if len(removed_data) > 0:
+            print("\n4. 生成影响分析可视化...")
+            
+            fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+            
+            # 1. 星级分布对比
+            if 'stars' in removed_data.columns and 'stars' in business_df.columns:
+                axes[0, 0].hist(business_df['stars'].dropna(), bins=20, alpha=0.7, label='保留餐厅', color='blue')
+                axes[0, 0].hist(removed_data['stars'].dropna(), bins=20, alpha=0.7, label='被移除餐厅', color='red')
+                axes[0, 0].set_xlabel('星级')
+                axes[0, 0].set_ylabel('餐厅数量')
+                axes[0, 0].set_title('星级分布对比')
+                axes[0, 0].legend()
+                axes[0, 0].grid(True, alpha=0.3)
+            
+            # 2. 评论数分布对比（对数坐标）
+            if 'review_count' in removed_data.columns and 'review_count' in business_df.columns:
+                kept_reviews = business_df['review_count'].dropna()
+                removed_reviews = removed_data['review_count'].dropna()
+                
+                # 过滤掉0值，避免对数坐标问题
+                kept_reviews = kept_reviews[kept_reviews > 0]
+                removed_reviews = removed_reviews[removed_reviews > 0]
+                
+                if len(kept_reviews) > 0 and len(removed_reviews) > 0:
+                    axes[0, 1].hist(np.log10(kept_reviews), bins=20, alpha=0.7, label='保留餐厅', color='blue')
+                    axes[0, 1].hist(np.log10(removed_reviews), bins=20, alpha=0.7, label='被移除餐厅', color='red')
+                    axes[0, 1].set_xlabel('评论数量 (对数)')
+                    axes[0, 1].set_ylabel('餐厅数量')
+                    axes[0, 1].set_title('评论数量分布对比 (对数)')
+                    axes[0, 1].legend()
+                    axes[0, 1].grid(True, alpha=0.3)
+            
+            # 3. 地理分布图（只显示保留的餐厅）
+            if 'latitude' in business_df.columns and 'longitude' in business_df.columns:
+                axes[1, 0].scatter(business_df['longitude'], business_df['latitude'], 
+                                 alpha=0.3, s=10, color='blue', label='保留餐厅')
+                axes[1, 0].set_xlabel('经度')
+                axes[1, 0].set_ylabel('纬度')
+                axes[1, 0].set_title('保留餐厅地理分布')
+                axes[1, 0].grid(True, alpha=0.3)
+                axes[1, 0].legend()
+            
+            # 4. 移除比例饼图
+            labels = ['保留餐厅', '被移除餐厅']
+            sizes = [len(business_df), len(removed_data)]
+            colors = ['#66b3ff', '#ff9999']
+            
+            axes[1, 1].pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+            axes[1, 1].set_title('坐标清洗移除比例')
+            
+            plt.suptitle('坐标清洗影响分析可视化', fontsize=16)
+            plt.tight_layout()
+            plt.show()
+    
+    print("\n" + "=" * 60)
+    print("坐标清洗影响分析完成")
+    print("=" * 60)
+    
+    # 保存分析结果
+    if SAVE_INTERMEDIATE:
+        import json
+        impact_file = os.path.join(INTERMEDIATE_PATH, "coordinate_cleaning_impact.json")
+        with open(impact_file, 'w', encoding='utf-8') as f:
+            json.dump(impact_results, f, ensure_ascii=False, indent=2)
+        print(f"坐标清洗影响分析结果已保存到: {impact_file}")
+    
+    return impact_results
+
